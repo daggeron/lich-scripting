@@ -1,0 +1,587 @@
+require "set"
+require "forwardable"
+require 'optparse'
+
+
+=begin
+
+  This script provides quality of life code for multiple projects.
+
+  Currently:
+    Utilities
+      CommandMonitor - Easy Upstream command hooking
+      send_formatted - Color formatting - from foreach.lic
+    Timers           - Periodic task timers
+
+  Roadmap:
+    Documentation and examples
+    Options Parser
+
+     author: Steeltalon (admin@dc20.net)
+       game: Gemstone
+       tags: library
+    version: 0.02
+
+   changelog:
+      0.02 (2020-06-25):
+        Initial Release
+
+=end
+
+
+module Utitilies
+
+  def self.send_formatted(msg)
+    msg = REXML::Text.new(msg, respect_whitespace: true).to_s
+    msg.gsub!(/!!(.*?)!!/, '<preset id="thought">\1</preset>')
+    msg.gsub!(/\*\*(.*?)\*\*/, '<preset id="whisper">\1</preset>')
+    msg.gsub!(/`(.*?)`/, '<preset id="speech">\1</preset>')
+    msg = "<output class=\"mono\" />\n#{msg}\n<output class=\"\" />"
+    puts msg
+  end
+
+  class CommandMonitor
+
+
+    def cleanup
+      UpstreamHook.remove('upstream-command-hook')
+
+      begin
+        @watcher_thread.stop?
+      ensure
+        @watcher_thread = nil
+      end
+
+    end
+
+    def stop
+      cleanup
+    end
+
+    def is_running?
+      @watcher_thread && @watcher_thread.status != false
+    end
+
+    def sethook
+      hook_proc = proc {|client_string|
+        begin
+
+          if client_string =~ /^(?:<c>)?(#{@patterns.join("|")})(.*)/i
+            cmd = $1.downcase
+            @que.enq({"cmd" => cmd, "args" => $2}, true)
+
+            key = @commands.keys.find {|s| s.include?(cmd)}
+            command = @commands[key]
+
+            command[:suppress] ? nil : client_string
+
+          else
+            client_string
+          end
+        rescue
+          respond $!
+          respond $!.backtrace
+          UpstreamHook.remove('upstream-command-hook')
+          client_string
+        end
+      }
+
+      UpstreamHook.add('upstream-command-hook', hook_proc)
+    end
+
+    def setwatcherthread
+      @watcher_thread = Thread.new {
+        loop {
+          sleep(0.1)
+          command = @que.pop
+          process_command(command["cmd"], command["args"])
+        }
+      }
+    end
+
+    #Do not catch exceptions here.  Let them bubble up.
+    def start
+      ## Make sure we aren't currently running
+      #if @watcher_thread && @watcher_thread.status != false
+      #  raise "Attempted to run new Watcher Thread while one is alive."
+      #end
+      sethook
+      setwatcherthread
+    end
+
+    def process_command(command, args)
+      begin
+        key = @commands.keys.find {|s| s.include?(command)}
+        command = @commands[key]
+        command[:block].call(args)
+      rescue
+        respond $!
+        respond $!.backtrace
+      end
+    end
+
+    def on(command, regex = nil, suppress = true, &block)
+      regex = command if regex.nil?
+
+      if is_running?
+        echo "Currently running"
+        return false
+      end
+
+      unless block.class == Proc
+        echo "Block not a Proc (#{block})"
+        return false
+      end
+
+      @commands[command] = {:block => block, :suppress => suppress}
+      @patterns << regex
+    end
+
+    def initialize()
+
+      @commands ||= Hash.new
+      @patterns = []
+      @que = SizedQueue.new(5)
+      @watcher_thread = nil
+
+      before_dying {cleanup}
+    end
+  end
+
+end
+
+#Credit: Socketry Timers by ioquatrix
+#Github Url: https://github.com/socketry/timers
+module Timers
+  VERSION = "4.3.0"
+  class Group
+    include Enumerable
+
+    extend Forwardable
+    def_delegators :@timers, :each, :empty?
+
+    def initialize
+      @events = Events.new
+
+      @timers = Set.new
+      @paused_timers = Set.new
+
+      @interval = Interval.new
+      @interval.start
+    end
+
+    # Scheduled events:
+    attr_reader :events
+
+    # Active timers:
+    attr_reader :timers
+
+    # Paused timers:
+    attr_reader :paused_timers
+
+    # Call the given block after the given interval. The first argument will be
+    # the time at which the group was asked to fire timers for.
+    def after(interval, &block)
+      Timer.new(self, interval, false, &block)
+    end
+
+    # Call the given block immediately, and then after the given interval. The first
+    # argument will be the time at which the group was asked to fire timers for.
+    def now_and_after(interval, &block)
+      yield
+      after(interval, &block)
+    end
+
+    # Call the given block periodically at the given interval. The first
+    # argument will be the time at which the group was asked to fire timers for.
+    def every(interval, recur = true, &block)
+      Timer.new(self, interval, recur, &block)
+    end
+
+    # Call the given block immediately, and then periodically at the given interval. The first
+    # argument will be the time at which the group was asked to fire timers for.
+    def now_and_every(interval, recur = true, &block)
+      yield
+      every(interval, recur, &block)
+    end
+
+    # Wait for the next timer and fire it. Can take a block, which should behave
+    # like sleep(n), except that n may be nil (sleep forever) or a negative
+    # number (fire immediately after return).
+    def wait
+      if block_given?
+        yield wait_interval
+
+        while (interval = wait_interval) && interval > 0
+          yield interval
+        end
+      else
+        while (interval = wait_interval) && interval > 0
+          # We cannot assume that sleep will wait for the specified time, it might be +/- a bit.
+          sleep interval
+        end
+      end
+
+      fire
+    end
+
+    # Interval to wait until when the next timer will fire.
+    # - nil: no timers
+    # - -ve: timers expired already
+    # -   0: timers ready to fire
+    # - +ve: timers waiting to fire
+    def wait_interval(offset = current_offset)
+      handle = @events.first
+      handle.time - Float(offset) if handle
+    end
+
+    # Fire all timers that are ready.
+    def fire(offset = current_offset)
+      @events.fire(offset)
+    end
+
+    # Pause all timers.
+    def pause
+      @timers.dup.each(&:pause)
+    end
+
+    # Resume all timers.
+    def resume
+      @paused_timers.dup.each(&:resume)
+    end
+
+    alias continue resume
+
+    # Delay all timers.
+    def delay(seconds)
+      @timers.each do |timer|
+        timer.delay(seconds)
+      end
+    end
+
+    # Cancel all timers.
+    def cancel
+      @timers.dup.each(&:cancel)
+    end
+
+    # The group's current time.
+    def current_offset
+      @interval.to_f
+    end
+  end
+
+  class Wait
+    def self.for(duration, &block)
+      if duration
+        timeout = new(duration)
+
+        timeout.while_time_remaining(&block)
+      else
+        loop do
+          yield(nil)
+        end
+      end
+    end
+
+    def initialize(duration)
+      @duration = duration
+      @remaining = true
+    end
+
+    attr_reader :duration
+    attr_reader :remaining
+
+    # Yields while time remains for work to be done:
+    def while_time_remaining
+      @interval = Interval.new
+      @interval.start
+
+      yield @remaining while time_remaining?
+    ensure
+      @interval.stop
+      @interval = nil
+    end
+
+    private
+
+    def time_remaining?
+      @remaining = (@duration - @interval.to_f)
+
+      @remaining > 0
+    end
+  end
+
+  class Events
+    # Represents a cancellable handle for a specific timer event.
+    class Handle
+      def initialize(time, callback)
+        @time = time
+        @callback = callback
+      end
+
+      # The absolute time that the handle should be fired at.
+      attr_reader :time
+
+      # Cancel this timer, O(1).
+      def cancel!
+        # The simplest way to keep track of cancelled status is to nullify the
+        # callback. This should also be optimal for garbage collection.
+        @callback = nil
+      end
+
+      # Has this timer been cancelled? Cancelled timer's don't fire.
+      def cancelled?
+        @callback.nil?
+      end
+
+      def > other
+        @time > other.to_f
+      end
+
+      def >= other
+        @time >= other.to_f
+      end
+
+      def to_f
+        @time
+      end
+
+      # Fire the callback if not cancelled with the given time parameter.
+      def fire(time)
+        @callback.call(time) if @callback
+      end
+    end
+
+    def initialize
+      # A sequence of handles, maintained in sorted order, future to present.
+      # @sequence.last is the next event to be fired.
+      @sequence = []
+      @queue = []
+    end
+
+    # Add an event at the given time.
+    def schedule(time, callback)
+      handle = Handle.new(time.to_f, callback)
+
+      @queue << handle
+
+      return handle
+    end
+
+    # Returns the first non-cancelled handle.
+    def first
+      merge!
+
+      while (handle = @sequence.last)
+        return handle unless handle.cancelled?
+        @sequence.pop
+      end
+    end
+
+    # Returns the number of pending (possibly cancelled) events.
+    def size
+      @sequence.size + @queue.size
+    end
+
+    # Fire all handles for which Handle#time is less than the given time.
+    def fire(time)
+      merge!
+
+      while handle = @sequence.last and handle.time <= time
+        @sequence.pop
+        handle.fire(time)
+      end
+    end
+
+    private
+
+    def merge!
+      while handle = @queue.pop
+        next if handle.cancelled?
+
+        index = bisect_right(@sequence, handle)
+
+        if current_handle = @sequence[index] and current_handle.cancelled?
+          # puts "Replacing handle at index: #{index} due to cancellation in array containing #{@sequence.size} item(s)."
+          @sequence[index] = handle
+        else
+          # puts "Inserting handle at index: #{index} in array containing #{@sequence.size} item(s)."
+          @sequence.insert(index, handle)
+        end
+      end
+    end
+
+    # Return the right-most index where to insert item e, in a list a, assuming
+    # a is sorted in descending order.
+    def bisect_right(a, e, l = 0, u = a.length)
+      while l < u
+        m = l + (u - l).div(2)
+
+        if a[m] >= e
+          l = m + 1
+        else
+          u = m
+        end
+      end
+
+      l
+    end
+  end
+
+  class Interval
+    # Get the current elapsed monotonic time.
+    def initialize
+      @total = 0.0
+      @current = nil
+    end
+
+    def start
+      return if @current
+
+      @current = now
+    end
+
+    def stop
+      return unless @current
+
+      @total += duration
+
+      @current = nil
+    end
+
+    def to_f
+      @total + duration
+    end
+
+    protected def duration
+      now - @current
+    end
+
+    protected def now
+      ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+    end
+  end
+  class Timer
+    include Comparable
+    attr_reader :interval, :offset, :recurring
+
+    def initialize(group, interval, recurring = false, offset = nil, &block)
+      @group = group
+
+      @interval = interval
+      @recurring = recurring
+      @block = block
+      @offset = offset
+
+      @handle = nil
+
+      # If a start offset was supplied, use that, otherwise use the current timers offset.
+      reset(@offset || @group.current_offset)
+    end
+
+    def paused?
+      @group.paused_timers.include? self
+    end
+
+    def pause
+      return if paused?
+
+      @group.timers.delete self
+      @group.paused_timers.add self
+
+      @handle.cancel! if @handle
+      @handle = nil
+    end
+
+    def resume
+      return unless paused?
+
+      @group.paused_timers.delete self
+
+      # This will add us back to the group:
+      reset
+    end
+
+    alias continue resume
+
+    # Extend this timer
+    def delay(seconds, max = 0)
+      @handle.cancel! if @handle
+
+      @offset += seconds
+
+      @offset = @offset > max ? max : @offset
+
+      @handle = @group.events.schedule(@offset, self)
+    end
+
+    # Cancel this timer. Do not call while paused.
+    def cancel
+      return unless @handle
+
+      @handle.cancel! if @handle
+      @handle = nil
+
+      # This timer is no longer valid:
+      @group.timers.delete self if @group
+    end
+
+    # Reset this timer. Do not call while paused.
+    # @param offset [Numeric] the duration to add to the timer.
+    def reset(offset = @group.current_offset)
+      # This logic allows us to minimise the interaction with @group.timers.
+      # A timer with a handle is always registered with the group.
+      if @handle
+        @handle.cancel!
+      else
+        @group.timers << self
+      end
+
+      @offset = Float(offset) + @interval
+
+      @handle = @group.events.schedule(@offset, self)
+    end
+
+    # Fire the block.
+    def fire(offset = @group.current_offset)
+      if recurring == :strict
+        # ... make the next interval strictly the last offset + the interval:
+        reset(@offset)
+      elsif recurring
+        reset(offset)
+      else
+        @offset = offset
+      end
+
+      @block.call(offset, self)
+
+      cancel unless recurring
+    end
+
+    alias call fire
+
+    # Number of seconds until next fire / since last fire
+    def fires_in
+      @offset - @group.current_offset if @offset
+    end
+
+    # Inspect a timer
+    def inspect
+      str = "#{to_s[0..-2]} ".dup
+
+      if @offset
+        str << if fires_in >= 0
+                 "fires in #{fires_in} seconds"
+               else
+                 "fired #{fires_in.abs} seconds ago"
+               end
+
+        str << ", recurs every #{interval}" if recurring
+      else
+        str << "dead"
+      end
+
+      str << ">"
+    end
+  end
+end

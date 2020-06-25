@@ -1,0 +1,179 @@
+=begin
+
+  Updated Voln favor tracking using the new RESOURCE command.
+
+  Set the script to start on login.
+  Type "favor" with the script running to see how much favor you have.
+
+  Requres: oleani-lib.lic (will auto download)
+     author: Steeltalon (admin@dc20.net)
+       game: Gemstone
+       tags: library
+    version: 0.0.1
+
+   changelog:
+      0.0.1 (2020-06-25):
+        Initial Release
+
+=end
+
+
+unless Script.exists?('oleani-lib.lic')
+  echo "PANIC!!"
+  exit
+  #do_client(";repository download oleani-lib.lic")
+  #wait_while { running?('repository') }
+end
+
+load 'scripts/oleani-lib.lic'
+
+$favor = CharSettings.to_hash
+$favor[:symbol] ||= 0
+$favor[:step] ||= 0
+$favor[:symbol_error] ||= 0
+$favor[:step_error] ||= 0
+
+module ASexualFavors
+  VERSION = '0.0.1'
+
+  UNDEAD_RELEASE = /^.*?You hear a sound like a weeping child as a white glow separates itself/
+
+  RANK_UP = /^(?:<.*?>)?The (?:<.*?>)?monk(?:<.*?>)? concludes ceremoniously.*Go now and continue your work\./
+
+  PRAY_MESSAGES = Hash.new
+
+  #Wehnimer's Landing, Icemule Trace, Solhaven, and Ta'Vaalor Visions
+  PRAY_MESSAGES["vision of a flower that has not yet begun to open"] = 0
+  PRAY_MESSAGES["vision of a baby eagle barely hatched from its egg"] = 0.10
+  PRAY_MESSAGES["vision of a butterfly drying its wings on a leaf"] = 0.20
+  PRAY_MESSAGES["vision of the headwaters of a mighty river"] = 0.30
+  PRAY_MESSAGES["vision of a weaver on a loom, nearly half way in the creation of an intricate tapestry"] = 0.40
+  PRAY_MESSAGES["brief vision of twin bowls of wine"] = 0.50
+  PRAY_MESSAGES["vision of a hiker as he clears the peak of a hill and begins to descend the other side"] = 0.60
+  PRAY_MESSAGES["vision of a lute, finely crafted, but missing a third of its strings"] = 0.70
+  PRAY_MESSAGES["rainbow forming as a thunder storm begins to abate"] = 0.80
+  PRAY_MESSAGES["path as it winds its way through a forest and to the edge of a clear pool"] = 0.90
+  PRAY_MESSAGES["vision of a pool of clear water"] = 1
+
+  #Todo: Add River's Rest Visions
+
+  def self.cleanup
+    DownstreamHook.remove("favor_hook")
+    @command_watcher.stop
+    @timer_thread.kill
+  end
+
+  def self.update_favor(favor)
+    last_favor = $favor[:symbol]
+
+    change = favor - last_favor
+
+    favor_gain = change > 0 ? change : 0
+
+    $favor[:symbol] = favor
+    $favor[:step] += favor_gain
+    step_favor = self.favor_to_step
+
+    if (@capture_resource && change != 0) || @force
+      Utitilies::send_formatted "**ASEXUALFAVORS**: !!#{$favor[:symbol]} Favor !! `Change (+/-):#{change}`  - !!#{$favor[:step]}/#{step_favor}!! `(#{($favor[:step] * 100) / step_favor}%)`"
+    end
+
+    @force = false
+
+  end
+
+  def self.install_hook
+    DownstreamHook.add("favor_hook", proc {|server_string|
+      if @state == :first && server_string =~ /^\s*?Health: \d+/
+        @state = :second
+        @capture_resource ? nil : server_string
+      elsif @state == :second
+        if server_string =~ /^(?:<popBold\/>|\s*)?Voln Favor: (\d+)/
+          self.update_favor($1.to_i)
+        elsif server_string =~ /^(?:<popBold\/>|\s*)?Motes of Tranquility:/
+          #Capture motes
+        elsif server_string =~ /^<output class=""\/>/
+          @state = :first
+          @capture_resource = false
+        end
+        @capture_resource ? nil : server_string
+      else
+        server_string
+      end
+
+    })
+  end
+
+  def self.favor_to_step
+    (Society.rank * 100) + (((XMLData.level ** 2) * (((Society.rank + 2) / 3) * 5)) / 3)
+  end
+
+  def self.start_timer_thread
+    @timer_thread = Thread.new {
+      loop {
+        sleep (0.1)
+        @timers.wait
+      }
+    }
+  end
+
+  def self.monitor_downstream
+    while (line = get)
+      if line =~ UNDEAD_RELEASE
+        @send_resource_request.reset
+      elsif line =~ RANK_UP
+        $favor[:step] = 0
+        @send_resource_request.reset(0)
+      elsif line =~ /^After a few moments of prayer and reflection you see a (.*?)\./
+        $favor[:step] = (self.favor_to_step * PRAY_MESSAGES[$1]).ceil
+        @force = true
+        @send_resource_request.reset(0)
+      end
+    end
+  end
+
+  def self.start
+    @force = true
+    @timers = Timers::Group.new
+    @command_watcher = Utitilies::CommandMonitor.new
+    @timer_thread = nil
+    @capture_resource = false
+    @state = :first
+
+    @send_resource_request = @timers.after(1) {
+      @capture_resource = true
+      $_SERVER_.puts "#{$cmd_prefix}resource\n"
+    }
+
+    before_dying {self.cleanup}
+
+    self.setup_commands
+    @command_watcher.start
+
+    self.install_hook
+    self.start_timer_thread
+    Utitilies::send_formatted("**ASEXUALFAVORS** Version[`#{VERSION}`] Running")
+
+    #Blocking call.  Must come last
+    self.monitor_downstream
+  end
+
+  def self.setup_commands()
+    @command_watcher.on("favors", "fav[or|r]*") do |args|
+      step_favor = self.favor_to_step
+      Utitilies::send_formatted("\n    **Total Favor:**` #{$favor[:symbol]}`")
+      Utitilies::send_formatted("    **Current Step:** `#{$favor[:step]}/#{step_favor}` !!(#{($favor[:step] * 100) / step_favor}%)!!\n")
+    end
+
+    @command_watcher.on("symbol", "sy[mbol|mbo|mb|m]*", false) do |args|
+      @send_resource_request.reset(0)
+    end
+
+  end
+
+end
+
+
+ASexualFavors.start
+
+
