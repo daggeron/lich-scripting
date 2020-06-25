@@ -24,15 +24,27 @@ command_watcher.on("helloworld") do |args|
   Utitilies::send_formatted("**Hello world**")
 end
 
+#After script is running type :sy or sym or symbo or symbol
+#Will also not suppress the base symbol command
+command_watcher.on("symbol", "sy[mbol|mbo|mb|m]*", false) do |args|
+  Utitilies::send_formatted("**Sent symbol command**")
+end
+
+#Start monitoring for supplied commands
+command_watcher.start
+
 #After 10 seconds say hello again and then exit
 helloworld2 = timers.after(10) {
   Utitilies::send_formatted("!!HELLO WORLD AGAIN!!")
   exit
 }
 
+helloworld2 = timers.after(10) {
+  Utitilies::send_formatted("!!HELLO WORLD AGAIN!!")
+}
 
-
-
+every_five_seconds = timers.every(5) { 
+Utitilies::send_formatted("**Another 5 seconds**" }
 
 
 
