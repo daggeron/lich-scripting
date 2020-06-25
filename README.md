@@ -33,20 +33,17 @@ end
 #Start monitoring for supplied commands
 command_watcher.start
 
-#After 10 seconds say hello again and then exit
-helloworld2 = timers.after(10) {
-  Utitilies::send_formatted("!!HELLO WORLD AGAIN!!")
-  exit
-}
-
+#After 10 seconds say hello again
 helloworld2 = timers.after(10) {
   Utitilies::send_formatted("!!HELLO WORLD AGAIN!!")
 }
 
+#https://github.com/socketry/timers
+#for more examples
+
+#Every 5 second beep basically
 every_five_seconds = timers.every(5) { 
 Utitilies::send_formatted("**Another 5 seconds**" }
-
-
 
 mutex = Mutex.new
 resource = ConditionVariable.new
