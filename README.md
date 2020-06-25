@@ -24,7 +24,8 @@ command_watcher.on("helloworld") do |args|
   Utitilies::send_formatted("**Hello world**")
 end
 
-#After script is running type :sy or sym or symbo or symbol
+#After script is running type : symbol
+#It will also except sym, symbo, or symbol
 #Will also not suppress the base symbol command
 command_watcher.on("symbol", "sy[mbol|mbo|mb|m]*", false) do |args|
   Utitilies::send_formatted("**Sent symbol command**")
