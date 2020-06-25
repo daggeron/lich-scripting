@@ -38,12 +38,15 @@ helloworld2 = timers.after(10) {
   Utitilies::send_formatted("!!HELLO WORLD AGAIN!!")
 }
 
-#https://github.com/socketry/timers
-#for more examples
+
 
 #Every 5 second beep basically
 every_five_seconds = timers.every(5) { 
-Utitilies::send_formatted("**Another 5 seconds**" }
+  Utitilies::send_formatted("**Another 5 seconds**")
+}
+#For more timer examples
+#https://github.com/socketry/timers
+
 
 mutex = Mutex.new
 resource = ConditionVariable.new
