@@ -1,5 +1,5 @@
 # lich-scripting
-Various scripts I use
+Various scripts I maintain
 
 
 How to use oleani-lib.lic
@@ -20,7 +20,7 @@ timer_thread = Thread.new {
 command_watcher = Utitilies::CommandMonitor.new
 
 #After script is running type : helloworld
-command_watcher.on("helloworld"") do |args|
+command_watcher.on("helloworld") do |args|
   Utitilies::send_formatted("**Hello world**")
 end
 
